@@ -7,9 +7,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 
 hostname = "0.0.0.0"
-server_port = 9090
-shared_dict = dict()
+server_port = 80
+shared_dict: dict = dict()
 ffmpeg_thread_count = "8"
+ffmpeg_location = "ffmpeg-bin/ffmpeg"
 
 @dataclass
 class RequestOptions:
@@ -23,17 +24,19 @@ class RequestOptions:
     #hardware_encoding: bool = False
 
     def should_force_keyframes(self):
+        '''Whether the original re-encode should have forced keyframes. Requires re-encoding the video, but is necessary for subtitles to display correctly when sponsorblock is used'''
         return self.remove_sponsors and self.embed_subtitles
-
 
 
 class MyServer(BaseHTTPRequestHandler):
     request_info: RequestOptions = RequestOptions()
     
-    def reset(self):
+    def reset(self) -> None:
+        '''Reset the client's state'''
         self.request_info = RequestOptions()
 
-    def send_status_code(self, code):
+    def send_status_code(self, code: int) -> None:
+        '''Send a status-code-only response, like a 500'''
         self.send_response(code)
         self.end_headers()
         self.wfile.write(bytes(0))
@@ -46,18 +49,24 @@ class MyServer(BaseHTTPRequestHandler):
     async def on_request(self):
         try:
             if (self.path == "/favicon.ico"):
+                # don't have a favicon yet
+                self.send_status_code(404)
                 return
             
             if "index" in self.path:
-                print("got index!")
+                # don't have an index page yet
+                self.send_status_code(404)
                 return
 
             # set up request options
             self.handle_path(self.path)
+            # TODO: implement range headers
+            #self.handle_range_headers(???)
 
             # download the video
             await download_video(self.request_info)
             
+            # serve the actual video data
             await self.serve_video()
             print("finished serving for ", self.client_address)
         
@@ -66,7 +75,10 @@ class MyServer(BaseHTTPRequestHandler):
             self.send_status_code(500)
             return
     
-    async def serve_video(self):
+    def get_file_prefix(self) -> str:
+        pass
+
+    async def serve_video(self) -> None:
         video_id = self.request_info.video_id
         video_speed = self.request_info.video_speed
         if video_id + ".downloaded" not in shared_dict:
@@ -74,6 +86,7 @@ class MyServer(BaseHTTPRequestHandler):
             return
 
         src_video_path = shared_dict[video_id + ".downloaded"]
+        # TODO: refactor to use get_file_prefix
         lock_dict_name = '"' + video_id + "." + str(video_speed) + '"' + ".lock"
         output_file_name = '"' + video_id + "." + str(video_speed) + '"' + ".mp4"
 
@@ -107,17 +120,21 @@ class MyServer(BaseHTTPRequestHandler):
         # read video data in and send it 250,000 bytes at a time
         encoded_data = shared_dict[output_file_name]
 
-        #actually send the data
+        # actually send the data
+
+        # Send headers
         self.send_response(200)
         self.send_header("Content-Type", "video/mp4")
         self.end_headers()
+
+        # Send data
         await self.send_bytes(lock_dict_name, encoded_data)
 
-    async def send_bytes(self, lock_dict_name: str, data_to_send):
+    async def send_bytes(self, lock_dict_name: str, data_to_send) -> None:
         start_index = 0
         read_data = 0
         while True:
-            # send data 250kb at a time 
+            # send data 250kb at a time, for better 
             data = data_to_send[start_index:start_index + 250000]
             read_data = len(data)
 
@@ -232,7 +249,7 @@ def generate_ytdl_opts(options: RequestOptions):
     "noplaylist": True,
     "verbose": True,
     'overwrites': True,
-    'ffmpeg_location': 'ffmpeg-bin/ffmpeg',
+    'ffmpeg_location': ffmpeg_location,
     'writesubtitles': options.embed_subtitles,
     'postprocessors': list()
     }
